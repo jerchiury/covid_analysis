@@ -1,2 +1,5 @@
 *ontario*
 *.zip
+*.Rhistory
+*.RData
+*pylint*
