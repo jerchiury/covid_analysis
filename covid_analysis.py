@@ -17,32 +17,21 @@ from statsmodels.graphics.tsaplots import plot_pacf
 from statsmodels.tsa.arima_model import ARIMA
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.seasonal import seasonal_decompose
+import scipy.fftpack as fftp
+import statsmodels.api as sm
 
 os.chdir('C:\\Users\\Jerry\\Desktop\\Jerry\\projects\\covid19')
 os.listdir()
 file_names=os.listdir()
 file_names=[x for x in file_names if '.csv' in x and ('map' in x or 'ts' in x or x=='COVID19_eng.csv')]
 
-#%%
 for n in file_names:
     print(n)
     names=n.replace('.csv','').replace('-','_')
     exec(names+'=pd.read_csv("'+n+'", encoding="latin1")')
     exec(names+'.name="'+names+'"')
-#%%
 data_list=[updated_ts_prov_active, updated_ts_prov_cases, updated_ts_prov_mortality, updated_ts_prov_testing, updated_ts_prov_recovered,
            updated_ts_prov_dvaccine, updated_ts_prov_avaccine]
-#%%
-for df in data_list:
-    print(df.name)
-    print(df.isnull().values.any())
-    print(df.columns)
-    
-# updated_ts_prov_testing has null value!
-updated_ts_prov_testing.iloc[np.where(updated_ts_prov_testing.isnull())] 
-# looks like the testing_info is mostly nan. We disregard this since it doesn't impact our analysis directly. 
-
-#%%
 # now we gotta join each rame together by the province and date. The cumulative stats of each frame is already contained in the
 # active dataset. we just need to join the day to day changes. We have to join by province and date
 
@@ -53,12 +42,38 @@ for df in data_list:
     
 for df in [updated_ts_prov_cases, updated_ts_prov_mortality, updated_ts_prov_recovered]:
     df.drop(columns=[n for n in df.columns if 'cumulative' in n], inplace=True)
-
-#%%
+    
 # joining
 covid=functools.reduce(lambda x, y: pd.merge(x, y, on=['date', 'province'], how='outer'), data_list)
 covid.date=pd.to_datetime(covid.date ,format='%d-%m-%Y')
 covid=covid.fillna(0)
+
+# canada totals
+data_list2=[updated_ts_canada_active, updated_ts_canada_cases, updated_ts_canada_mortality, updated_ts_canada_testing, updated_ts_canada_recovered,
+           updated_ts_canada_dvaccine, updated_ts_canada_avaccine, updated_ts_canada_cvaccine]
+
+for df in data_list2:
+    df.columns=['date' if 'date' in n else n for n in df.columns]
+    df.drop(columns='province', inplace=True)
+    
+for df in [updated_ts_canada_cases, updated_ts_canada_mortality, updated_ts_canada_recovered]:
+    df.drop(columns=[n for n in df.columns if 'cumulative' in n], inplace=True)
+    
+# joining
+canada_covid=functools.reduce(lambda x, y: pd.merge(x, y, on=['date'], how='outer'), data_list2)
+canada_covid.date=pd.to_datetime(canada_covid.date ,format='%d-%m-%Y')
+canada_covid=canada_covid.fillna(0)
+#%%
+for df in data_list:
+    print(df.name)
+    print(df.isnull().values.any())
+    print(df.columns)
+    
+# updated_ts_prov_testing has null value!
+updated_ts_prov_testing.iloc[np.where(updated_ts_prov_testing.isnull())] 
+# looks like the testing_info is mostly nan. We disregard this since it doesn't impact our analysis directly. 
+
+
 #%%
 fig, axs=plt.subplots(4,4)
 i=0
@@ -111,30 +126,25 @@ i=0
 
 for prov in covid.province.unique():
     test=covid[covid.province==prov]
-    res=[]
     coeffs=[]
     start=0
     window=10
     incubation=5
-    for k in range(start, len(test)-window-incubation):
-        x=np.arange(0, window)
-        y=test.cumulative_cases.iloc[np.arange(k+incubation, k+window+incubation)]
-        active=1 if test.active_cases.iloc[k]<1 else test.active_cases.iloc[k]
-        def exp_fit(x,a,b):
-            return a+active*np.exp(b*x)
+    # for k in range(start, len(test)-window-incubation):
+    #     x=np.arange(0, window)
+    #     y=test.cumulative_cases.iloc[np.arange(k+incubation, k+window+incubation)]
+    #     active=1 if test.active_cases.iloc[k]<1 else test.active_cases.iloc[k]
+    #     def exp_fit(x,a,b):
+    #         return a+active*np.exp(b*x)
         
-        exp_coeff,_=scipy.optimize.curve_fit(exp_fit, x, y, maxfev=10000, p0=[1,0])
-        coeffs.append(exp_coeff[1])
-        residuals=y.array-exp_fit(x, exp_coeff[0], exp_coeff[1])
-        residuals=sum((residuals/res_scale)**2)
-        res.append(residuals)
+    #     exp_coeff,_=scipy.optimize.curve_fit(exp_fit, x, y, maxfev=10000, p0=[1,0])
+    #     coeffs.append(exp_coeff[1])
         
     yloc=i%4
     xloc=i//4
     plt.rcParams.update({'font.size': 4})
     plt.tick_params(axis='x', which='major', labelsize=2)
     
-    coeffs=[]
     x=matplotlib.dates.date2num(test.date)[start:len(test)-window-incubation]
     axs[xloc, yloc].plot_date(x, coeffs,  linestyle='-', linewidth=1, marker=None, c='b')
     axs[xloc, yloc].set_title(prov, fontsize=6)
@@ -151,19 +161,89 @@ plt.savefig('prov_equivalent_exp.png', format='png', dpi=300)
 
 #%% Susprciously, the number of active cases and the number of confirmed cases have 
 # almost the same shapes, but with a constant factor difference and bit of a lag
-test=covid[covid.province=='Alberta']
-plt.plot_date(test.date, test.cases*13, linestyle='-', linewidth=1, marker=None)
-plt.plot_date(test.date, test.active_cases, linestyle='-', linewidth=1, marker=None)
+# I suspeect that it's because of the recovery period being a few days long with normal distribution. 
+# irst, we have to look at the active cases vs no-longer-active cases (recovered + deaths) to get a sense of mean recovery time
+inactive=canada_covid.cumulative_recovered.add(canada_covid.cumulative_deaths)[180:]
+x=matplotlib.dates.date2num(canada_covid.date)[180:]
+plt.plot_date(x, inactive, linestyle='-', linewidth=2, marker=None)
+plt.plot_date(x, canada_covid.cumulative_cases[180:], linestyle='-', linewidth=1, marker=None)
+# yikes, in July a change in the definition of 'recovered' has really bumped the numbers, we do the shift fit after
+#let's shift it! we calculate the rmse for each shift and find the min rmse!
+def shift_fit(shift_data, fit_data, shift_min, shift_max):
+    rmse=pd.DataFrame(columns=['n','rmse'])
+    for n in range(shift_min, shift_max+1):
+        diff=fit_data.rsub(shift_data.shift(n))
+        diff=diff.dropna()
+        diff=np.sqrt((diff**2).mean())
+        rmse=rmse.append({'n':n,'rmse':diff}, ignore_index=True)
+    return rmse
 
+test_shift=shift_fit(inactive, canada_covid.cumulative_cases[180:], -21, 0)
+# rmse plot
+plt.rcParams.update({'font.size': 10})
+x1=plt.plot(test_shift.n, test_shift.rmse)
+x2=plt.axvline(x=-12, linestyle='--', c='r')
+plt.title('RMSE of shifting fit')
+plt.xlabel('Days')
+plt.ylabel('RMSE')
+plt.legend([x1, x2], labels=['RMSE','minimum at x = -12'], loc='lower right')
+plt.savefig('inactive_shift_fit_rmse.png', format='png', dpi=300)
 
-#%% Identify the distribution of active_case resolution/death date
-test=covid[covid.province=='Alberta']
-plt.plot()
+x1=plt.plot_date(x, inactive.shift(-12), linestyle='-', linewidth=3, marker=None, alpha=0.7)
+x2=plt.plot_date(x, canada_covid.cumulative_cases[180:], linestyle='-', linewidth=3, marker=None, alpha=0.7)
+plt.title('shifted cumulative recovered and deaths vs cumulative cases for Canada', fontsize=9)
+plt.legend([x1, x2], labels=['shifted cumulative recovered and deaths ','cumulative cases'], loc='upper left')
+plt.savefig('inactive_shifted_cumulative.png', format='png', dpi=300)
+## wow! it fits! so 12 days is the mean inactive period!
+
+#%% now it's time to see the relationship between active cases and cases.
+# intuition is that since the cases are mostly resolved within 12 days, we can try to see if that's correct.
+test=covid[covid.province=='Ontario']
+x=matplotlib.dates.date2num(test.date)
+plt.plot_date(x, test.cases, linestyle='-', linewidth=1, marker=None)
+plt.plot_date(x, test.active_cases, linestyle='-', linewidth=1, marker=None)
+
+def shift_fit(shift_data, fit_data, shift_range, mult):
+    rmse=0
+    for n in range(0, len(shift_range)):
+        for m in range(0, len(mult)):
+            diff=fit_data.rsub(shift_data.shift(shift_range[n])*mult[m])
+            diff=diff.dropna()
+            diff=1/np.sqrt((diff**2).mean())
+            if diff>rmse:
+                res_shift=shift_range[n]
+                res_mult=mult[m]
+                rmse=diff
+    return [res_shift, res_mult]
+shift_fit(test.cases, test.active_cases, np.arange(10,30,1), np.arange(10,20,0.1))
+
+x=matplotlib.dates.date2num(test.date)
+plt.plot_date(x, test.cases.shift(28)*15, linestyle='-', linewidth=1, marker=None)
+plt.plot_date(x, test.active_cases, linestyle='-', linewidth=1, marker=None)
+plt.plot(x, test.testing)
 
 
 #%% fourier analysis
-test=covid[covid.province=='Ontario']
-decomp = seasonal_decompose(test.cases, model='additive', freq=2)
+test=covid[covid.province=='Quebec']
+trans=fftp.fft(test.cases)
+x=fftp.fftfreq(len(test), 1/len(test))
+#plt.plot(x[:54], np.abs(trans)[:54])
+#plt.grid(True)
+
+trans=pd.DataFrame({'n':x,'freq':trans})
+trans.loc[np.abs(trans.freq).le(5000),'freq']=0
+itrans=ifft(trans.freq)
+x=np.arange(0,len(test))
+
+plt.plot(x, itrans.real, linewidth=2)
+plt.plot(x, test.cases, alpha=0.6)
+plt.grid(True)
+
+#%%
+test=covid[covid.province=='BC']
+test.loc[test.cases==0,'cases']=1
+test.index=test.date
+decomp = seasonal_decompose(test.cases, model='additive')
 decomp.plot()
 
 #%%
@@ -237,11 +317,13 @@ def pq_search(x, maxp, mindif, maxdif, maxq, pval_cut):
 
 ####### cases
 test=covid[covid.province=='Ontario']
+test=pd.DataFrame({'cases':itrans.real[60:]})
 test.cases=test.cases.replace(0,1)
+test.loc[test.cases.le(1)]=1
 test.cases=np.log(test.cases)
 test_stationarity(differencing(test.cases, 1), window=7, cutoff=0.01) # cases order is 1
-plot_pacf(differencing(test.cases,1)) ## looks like AR(2)
-plot_acf(differencing(test.cases,1)) ## looks like MA(1)
+plot_pacf(differencing(test.cases,0)) ## looks like AR(2)
+plot_acf(differencing(test.cases,0)) ## looks like MA(1)
 cases_arima=ARIMA(test.cases, (2,1,2)).fit(disp=False) #412
 print(cases_arima.summary())
 
@@ -260,11 +342,9 @@ cases_arima=ARIMA(train_data, (2,1,1)).fit(disp=False)
 print(cases_arima.summary()) # BAD Pvalues. Let's do a search for optimal pq
 
 search=pq_search(train_data, 3, 1, 2, 3, 0.05) # looks like 1,1,2 or 3,2,1
-plot_pacf(differencing(train_data,1)) ## looks like AR(2)
-plot_acf(differencing(train_data,1)) ## looks like MA(1)
-search[0]
+search[1]
 #let's see their performances
-cases_arima=ARIMA(train_data, (1,1,2)).fit(disp=False)
+cases_arima=ARIMA(train_data, (2,2,1)).fit(disp=False)
 print(cases_arima.summary())
 # Make as pandas series
 fc, se, conf = cases_arima.forecast(len(test_data), alpha=0.05)  # 95% conf
@@ -282,6 +362,13 @@ plt.title('ARIMA Forecast vs Actuals (3,2,1)')
 plt.legend(loc='upper left', fontsize=8)
 
 plt.savefig('cases_forecast_321.png', format='png', dpi=300)
+
+res=test_data.rsub(fc)
+(res**2).mean() # 221 has the lowest ms
+
+cases_arima.resid
+sm.stats.acorr_ljungbox(res, lags=3)
+plot_pacf(res)
 
 ####### active_cases
 test_stationarity(differencing(test.active_cases, 2), window=7, cutoff=0.01) # active_cases order is 2

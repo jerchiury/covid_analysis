@@ -67,6 +67,7 @@ get.csv.data=function(url, write.to.file=F){
 
 get.json.data('https://api.opencovid.ca/timeseries', 'ts.hr', 'loc=hr', T)
 get.json.data('https://api.opencovid.ca/timeseries', 'ts.prov', 'loc=prov', T)
+get.json.data('https://api.opencovid.ca/timeseries', 'ts.canada','loc=canada', write.to.file=T)
 
 get.ind.data(case.zip, T)
 
