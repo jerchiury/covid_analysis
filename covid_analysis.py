@@ -12,6 +12,11 @@ import matplotlib
 import numpy as np
 import functools 
 import scipy.optimize
+from statsmodels.graphics.tsaplots import plot_acf
+from statsmodels.graphics.tsaplots import plot_pacf
+from statsmodels.tsa.arima_model import ARIMA
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.seasonal import seasonal_decompose
 
 os.chdir('C:\\Users\\Jerry\\Desktop\\Jerry\\projects\\covid19')
 os.listdir()
@@ -149,3 +154,172 @@ plt.savefig('prov_equivalent_exp.png', format='png', dpi=300)
 test=covid[covid.province=='Alberta']
 plt.plot_date(test.date, test.cases*13, linestyle='-', linewidth=1, marker=None)
 plt.plot_date(test.date, test.active_cases, linestyle='-', linewidth=1, marker=None)
+
+
+#%% Identify the distribution of active_case resolution/death date
+test=covid[covid.province=='Alberta']
+plt.plot()
+
+
+#%% fourier analysis
+test=covid[covid.province=='Ontario']
+decomp = seasonal_decompose(test.cases, model='additive', freq=2)
+decomp.plot()
+
+#%%
+test=covid[covid.province=='Quebec']
+def differencing(x,d):
+    if d==0:
+        return x
+    else:
+        temp=x
+        for i in range(0,d):
+            temp=temp.diff()
+        temp=temp.dropna()
+        return temp
+    
+def simple_plot(x):
+    plt.plot(np.arange(0,len(x)),x)
+ 
+
+def test_stationarity(timeseries, window = 7, cutoff = 0.01):
+
+    #Determing rolling statistics
+    rolmean = timeseries.rolling(window).mean()
+    rolstd = timeseries.rolling(window).std()
+
+    #Plot rolling statistics:
+    fig = plt.figure(figsize=(12, 8))
+    orig = plt.plot(timeseries, color='blue',label='Original')
+    mean = plt.plot(rolmean, color='red', label='Rolling Mean')
+    std = plt.plot(rolstd, color='black', label = 'Rolling Std')
+    plt.legend(loc='best')
+    plt.title('Rolling Mean & Standard Deviation')
+    plt.show()
+    
+    #Perform Dickey-Fuller test:
+    print('Results of Dickey-Fuller Test:')
+    dftest = adfuller(timeseries, autolag='AIC', maxlag = 20 )
+    dfoutput = pd.Series(dftest[0:4], index=['Test Statistic','p-value','#Lags Used','Number of Observations Used'])
+    for key,value in dftest[4].items():
+        dfoutput['Critical Value (%s)'%key] = value
+    pvalue = dftest[1]
+    if pvalue < cutoff:
+        print('p-value = %.4f. The series is likely stationary.' % pvalue)
+    else:
+        print('p-value = %.4f. The series is likely non-stationary.' % pvalue)
+    
+    print(dfoutput)   
+
+
+
+def train_test(x, train_size):
+    length=int(np.floor(len(x)*train_size))
+    return([x[:length], x[length:]])
+
+def pq_search(x, maxp, mindif, maxdif, maxq, pval_cut):
+    final=[]
+    for d in range(mindif,maxdif+1):        
+        pranges=['p'+str(n) for n in list(range(1, maxp+1))]
+        qranges=['q'+str(n) for n in list(range(1, maxq+1))]
+        model_data=pd.DataFrame(index=pranges, columns=qranges)
+        for p in range(1, maxp+1):
+            for q in range(1, maxq+1):
+                print([p,d,q])
+                try:
+                    temp_arima=ARIMA(x, (p, d, q)).fit(disp=False)
+                    if (temp_arima.pvalues[1:]<=pval_cut).all():
+                        model_data.iloc[p-1,q-1]=temp_arima.aic
+                except:
+                    print('error')
+        final.append(model_data)
+    return(final)
+
+####### cases
+test=covid[covid.province=='Ontario']
+test.cases=test.cases.replace(0,1)
+test.cases=np.log(test.cases)
+test_stationarity(differencing(test.cases, 1), window=7, cutoff=0.01) # cases order is 1
+plot_pacf(differencing(test.cases,1)) ## looks like AR(2)
+plot_acf(differencing(test.cases,1)) ## looks like MA(1)
+cases_arima=ARIMA(test.cases, (2,1,2)).fit(disp=False) #412
+print(cases_arima.summary())
+
+res = pd.DataFrame(cases_arima.resid)
+fig, ax = plt.subplots(1,2)
+res.plot(title="Residuals", ax=ax[0])
+res.plot(kind='kde', title='Density', ax=ax[1])
+fig.tight_layout()
+res.mean() #-0.118, good
+res.std() #244, not too bad
+
+cases_arima.plot_predict(dynamic=False) # nice, let's validate it with 8/2 train/test
+
+train_data, test_data=train_test(test.cases, 0.8)
+cases_arima=ARIMA(train_data, (2,1,1)).fit(disp=False)
+print(cases_arima.summary()) # BAD Pvalues. Let's do a search for optimal pq
+
+search=pq_search(train_data, 3, 1, 2, 3, 0.05) # looks like 1,1,2 or 3,2,1
+plot_pacf(differencing(train_data,1)) ## looks like AR(2)
+plot_acf(differencing(train_data,1)) ## looks like MA(1)
+search[0]
+#let's see their performances
+cases_arima=ARIMA(train_data, (1,1,2)).fit(disp=False)
+print(cases_arima.summary())
+# Make as pandas series
+fc, se, conf = cases_arima.forecast(len(test_data), alpha=0.05)  # 95% conf
+fc_series = pd.Series(fc, index=test_data.index)
+lower_series = pd.Series(conf[:, 0], index=test_data.index)
+upper_series = pd.Series(conf[:, 1], index=test_data.index)
+
+# Plot
+plt.plot(train_data, label='training')
+plt.plot(test_data, label='actual')
+plt.plot(fc_series, label='forecast')
+plt.fill_between(lower_series.index, lower_series, upper_series, 
+                 color='k', alpha=.15)
+plt.title('ARIMA Forecast vs Actuals (3,2,1)')
+plt.legend(loc='upper left', fontsize=8)
+
+plt.savefig('cases_forecast_321.png', format='png', dpi=300)
+
+####### active_cases
+test_stationarity(differencing(test.active_cases, 2), window=7, cutoff=0.01) # active_cases order is 2
+plot_pacf(differencing(test.active_cases,2)) ## looks like AR(5)
+plot_acf(differencing(test.active_cases,2)) ## looks like MA(2)
+active_cases_arima=ARIMA(test.active_cases, (5,2,2)).fit(disp=False)
+print(active_cases_arima.summary()) # looks like MA(1) is not too good
+active_cases_arima=ARIMA(test.active_cases, (5,2,1)).fit(disp=False)
+print(active_cases_arima.summary()) # looks like MA(1) is better with lower AIC
+
+res = pd.DataFrame(active_cases_arima.resid)
+fig, ax = plt.subplots(1,2)
+res.plot(title="Residuals", ax=ax[0])
+res.plot(kind='kde', title='Density', ax=ax[1])
+fig.tight_layout()
+res.mean() #-0.02, good
+res.std() #300, not too bad
+active_cases_arima.plot_predict(dynamic=False)
+
+train_data, test_data=train_test(test.active_cases, 0.8)
+search=pq_search(train_data, 5, 2, 3, 5, 0.05) # looks like either 4,2,1 is the ways to go
+search[1]
+#let's see their performances
+active_cases_arima=ARIMA(train_data, (4,2,1)).fit(disp=False)
+
+# Make as pandas series
+fc, se, conf = active_cases_arima.forecast(len(test_data), alpha=0.05)  # 95% conf
+fc_series = pd.Series(fc, index=test_data.index)
+lower_series = pd.Series(conf[:, 0], index=test_data.index)
+upper_series = pd.Series(conf[:, 1], index=test_data.index)
+
+# Plot
+plt.plot(train_data, label='training')
+plt.plot(test_data, label='actual')
+plt.plot(fc_series, label='forecast')
+plt.fill_between(lower_series.index, lower_series, upper_series, 
+                 color='k', alpha=.15)
+plt.title('ARIMA Forecast vs Actuals (4,2,1)')
+plt.legend(loc='upper left', fontsize=8)
+
+plt.savefig('active_cases_forecast_421.png', format='png', dpi=300)
