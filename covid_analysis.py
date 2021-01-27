@@ -122,29 +122,31 @@ plt.savefig('prov_cases_active.png', format='png', dpi=300)
 #%%
 # we model each 2-week time window with an exponential growth function and get its growthrate in the exponent
 fig, axs=plt.subplots(4,4)
+plt.rc('xtick', labelsize=2.5)
 i=0
 
 for prov in covid.province.unique():
     test=covid[covid.province==prov]
     coeffs=[]
     start=0
-    window=10
+    window=12
     incubation=5
-    # for k in range(start, len(test)-window-incubation):
-    #     x=np.arange(0, window)
-    #     y=test.cumulative_cases.iloc[np.arange(k+incubation, k+window+incubation)]
-    #     active=1 if test.active_cases.iloc[k]<1 else test.active_cases.iloc[k]
-    #     def exp_fit(x,a,b):
-    #         return a+active*np.exp(b*x)
+    for k in range(start, len(test)-window-incubation):
+        x=np.arange(0, window)
+        y=test.cumulative_cases.iloc[np.arange(k+incubation, k+window+incubation)]
+        active=1 if test.active_cases.iloc[k]<1 else test.active_cases.iloc[k]
+        def exp_fit(x,a,b):
+            return a+active*np.exp(b*x)
         
-    #     exp_coeff,_=scipy.optimize.curve_fit(exp_fit, x, y, maxfev=10000, p0=[1,0])
-    #     coeffs.append(exp_coeff[1])
+        exp_coeff,_=scipy.optimize.curve_fit(exp_fit, x, y, maxfev=10000, p0=[1,0])
+        coeffs.append(exp_coeff[1])
         
     yloc=i%4
     xloc=i//4
     plt.rcParams.update({'font.size': 4})
     plt.tick_params(axis='x', which='major', labelsize=2)
     
+    coeffs=[n*12 for n in coeffs]
     x=matplotlib.dates.date2num(test.date)[start:len(test)-window-incubation]
     axs[xloc, yloc].plot_date(x, coeffs,  linestyle='-', linewidth=1, marker=None, c='b')
     axs[xloc, yloc].set_title(prov, fontsize=6)
@@ -196,39 +198,15 @@ plt.legend([x1, x2], labels=['shifted cumulative recovered and deaths ','cumulat
 plt.savefig('inactive_shifted_cumulative.png', format='png', dpi=300)
 ## wow! it fits! so 12 days is the mean inactive period!
 
-#%% now it's time to see the relationship between active cases and cases.
-# intuition is that since the cases are mostly resolved within 12 days, we can try to see if that's correct.
-test=covid[covid.province=='Ontario']
-x=matplotlib.dates.date2num(test.date)
-plt.plot_date(x, test.cases, linestyle='-', linewidth=1, marker=None)
-plt.plot_date(x, test.active_cases, linestyle='-', linewidth=1, marker=None)
-
-def shift_fit(shift_data, fit_data, shift_range, mult):
-    rmse=0
-    for n in range(0, len(shift_range)):
-        for m in range(0, len(mult)):
-            diff=fit_data.rsub(shift_data.shift(shift_range[n])*mult[m])
-            diff=diff.dropna()
-            diff=1/np.sqrt((diff**2).mean())
-            if diff>rmse:
-                res_shift=shift_range[n]
-                res_mult=mult[m]
-                rmse=diff
-    return [res_shift, res_mult]
-shift_fit(test.cases, test.active_cases, np.arange(10,30,1), np.arange(10,20,0.1))
-
-x=matplotlib.dates.date2num(test.date)
-plt.plot_date(x, test.cases.shift(28)*15, linestyle='-', linewidth=1, marker=None)
-plt.plot_date(x, test.active_cases, linestyle='-', linewidth=1, marker=None)
-plt.plot(x, test.testing)
-
 
 #%% fourier analysis
-test=covid[covid.province=='Quebec']
+test=covid[covid.province=='Ontario']
 trans=fftp.fft(test.cases)
 x=fftp.fftfreq(len(test), 1/len(test))
-#plt.plot(x[:54], np.abs(trans)[:54])
-#plt.grid(True)
+plt.rcParams.update({'font.size': 10})
+plt.rc('xtick', labelsize=10)
+plt.plot(x[:54], np.abs(trans)[:54])
+plt.grid(True)
 
 trans=pd.DataFrame({'n':x,'freq':trans})
 trans.loc[np.abs(trans.freq).le(5000),'freq']=0
@@ -240,10 +218,10 @@ plt.plot(x, test.cases, alpha=0.6)
 plt.grid(True)
 
 #%%
-test=covid[covid.province=='BC']
+test=covid[covid.province=='Ontario']
 test.loc[test.cases==0,'cases']=1
 test.index=test.date
-decomp = seasonal_decompose(test.cases, model='additive')
+decomp = seasonal_decompose(test.cases, model='additive', freq=17)
 decomp.plot()
 
 #%%
