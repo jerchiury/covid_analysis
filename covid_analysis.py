@@ -19,6 +19,7 @@ from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.seasonal import seasonal_decompose
 import scipy.fftpack as fftp
 import statsmodels.api as sm
+import dtw
 
 os.chdir('C:\\Users\\Jerry\\Desktop\\Jerry\\projects\\covid19')
 os.listdir()
@@ -120,7 +121,41 @@ fig.legend([x1, x2, x3, x4], labels=['total cases','active cases', 'recovered', 
 plt.savefig('prov_cases_active.png', format='png', dpi=300)
 
 #%%
-# we model each 2-week time window with an exponential growth function and get its growthrate in the exponent
+# we look at the inactivity time by shifting the recovered+deaths curve and fit it to the cumulative
+inactive=canada_covid.cumulative_recovered.add(canada_covid.cumulative_deaths)[180:]
+x=matplotlib.dates.date2num(canada_covid.date)[180:]
+plt.plot_date(x, inactive, linestyle='-', linewidth=2, marker=None)
+plt.plot_date(x, canada_covid.cumulative_cases[180:], linestyle='-', linewidth=1, marker=None)
+# yikes, in July a change in the definition of 'recovered' has really bumped the numbers, we do the shift fit after
+#let's shift it! we calculate the rmse for each shift and find the min rmse!
+def shift_fit(shift_data, fit_data, shift_min, shift_max):
+    rmse=pd.DataFrame(columns=['n','rmse'])
+    for n in range(shift_min, shift_max+1):
+        diff=fit_data.rsub(shift_data.shift(n))
+        diff=diff.dropna()
+        diff=np.sqrt((diff**2).mean())
+        rmse=rmse.append({'n':n,'rmse':diff}, ignore_index=True)
+    return rmse
+
+test_shift=shift_fit(inactive, canada_covid.cumulative_cases[180:], -21, 0)
+# rmse plot
+plt.rcParams.update({'font.size': 10})
+x1=plt.plot(test_shift.n, test_shift.rmse)
+x2=plt.axvline(x=-12, linestyle='--', c='r')
+plt.title('RMSE of shifting fit')
+plt.xlabel('Days')
+plt.ylabel('RMSE')
+plt.legend([x1, x2], labels=['RMSE','minimum at x = -12'], loc='lower right')
+plt.savefig('inactive_shift_fit_rmse.png', format='png', dpi=300)
+
+x1=plt.plot_date(x, inactive.shift(-12), linestyle='-', linewidth=3, marker=None, alpha=0.7)
+x2=plt.plot_date(x, canada_covid.cumulative_cases[180:], linestyle='-', linewidth=3, marker=None, alpha=0.7)
+plt.title('shifted cumulative recovered and deaths vs cumulative cases for Canada', fontsize=9)
+plt.legend([x1, x2], labels=['shifted cumulative recovered and deaths ','cumulative cases'], loc='upper left')
+plt.savefig('inactive_shifted_cumulative.png', format='png', dpi=300)
+## wow! it fits! so 12 days is the mean inactive period!
+#%%
+# we model each mean inactivity period (12 days) time window with an exponential growth function and get its growthrate in the exponent
 fig, axs=plt.subplots(4,4)
 plt.rc('xtick', labelsize=2.5)
 i=0
@@ -161,44 +196,6 @@ fig.suptitle('Transmission Rates as estimated with exponential growth by provinc
     
 plt.savefig('prov_equivalent_exp.png', format='png', dpi=300)
 
-#%% Susprciously, the number of active cases and the number of confirmed cases have 
-# almost the same shapes, but with a constant factor difference and bit of a lag
-# I suspeect that it's because of the recovery period being a few days long with normal distribution. 
-# irst, we have to look at the active cases vs no-longer-active cases (recovered + deaths) to get a sense of mean recovery time
-inactive=canada_covid.cumulative_recovered.add(canada_covid.cumulative_deaths)[180:]
-x=matplotlib.dates.date2num(canada_covid.date)[180:]
-plt.plot_date(x, inactive, linestyle='-', linewidth=2, marker=None)
-plt.plot_date(x, canada_covid.cumulative_cases[180:], linestyle='-', linewidth=1, marker=None)
-# yikes, in July a change in the definition of 'recovered' has really bumped the numbers, we do the shift fit after
-#let's shift it! we calculate the rmse for each shift and find the min rmse!
-def shift_fit(shift_data, fit_data, shift_min, shift_max):
-    rmse=pd.DataFrame(columns=['n','rmse'])
-    for n in range(shift_min, shift_max+1):
-        diff=fit_data.rsub(shift_data.shift(n))
-        diff=diff.dropna()
-        diff=np.sqrt((diff**2).mean())
-        rmse=rmse.append({'n':n,'rmse':diff}, ignore_index=True)
-    return rmse
-
-test_shift=shift_fit(inactive, canada_covid.cumulative_cases[180:], -21, 0)
-# rmse plot
-plt.rcParams.update({'font.size': 10})
-x1=plt.plot(test_shift.n, test_shift.rmse)
-x2=plt.axvline(x=-12, linestyle='--', c='r')
-plt.title('RMSE of shifting fit')
-plt.xlabel('Days')
-plt.ylabel('RMSE')
-plt.legend([x1, x2], labels=['RMSE','minimum at x = -12'], loc='lower right')
-plt.savefig('inactive_shift_fit_rmse.png', format='png', dpi=300)
-
-x1=plt.plot_date(x, inactive.shift(-12), linestyle='-', linewidth=3, marker=None, alpha=0.7)
-x2=plt.plot_date(x, canada_covid.cumulative_cases[180:], linestyle='-', linewidth=3, marker=None, alpha=0.7)
-plt.title('shifted cumulative recovered and deaths vs cumulative cases for Canada', fontsize=9)
-plt.legend([x1, x2], labels=['shifted cumulative recovered and deaths ','cumulative cases'], loc='upper left')
-plt.savefig('inactive_shifted_cumulative.png', format='png', dpi=300)
-## wow! it fits! so 12 days is the mean inactive period!
-
-
 #%% fourier analysis
 test=covid[covid.province=='Ontario']
 trans=fftp.fft(test.cases)
@@ -221,11 +218,12 @@ plt.grid(True)
 test=covid[covid.province=='Ontario']
 test.loc[test.cases==0,'cases']=1
 test.index=test.date
-decomp = seasonal_decompose(test.cases, model='additive', freq=17)
+decomp = seasonal_decompose(test.cases, model='additive', freq=7)
 decomp.plot()
 
+
 #%%
-test=covid[covid.province=='Quebec']
+test=covid[covid.province=='Ontario']
 def differencing(x,d):
     if d==0:
         return x
@@ -271,9 +269,12 @@ def test_stationarity(timeseries, window = 7, cutoff = 0.01):
 
 
 
-def train_test(x, train_size):
-    length=int(np.floor(len(x)*train_size))
-    return([x[:length], x[length:]])
+def train_test(x, train_size, mode='r'):
+    if mode=='r':
+        length=int(np.floor(len(x)*train_size))
+        return([x[:length], x[length:]])
+    elif mode=='n':
+        return([x[:len(x)-train_size], x[len(x)-train_size:]])
 
 def pq_search(x, maxp, mindif, maxdif, maxq, pval_cut):
     final=[]
@@ -293,16 +294,94 @@ def pq_search(x, maxp, mindif, maxdif, maxq, pval_cut):
         final.append(model_data)
     return(final)
 
-####### cases
+def fast_log(x):
+    x=x.replace(0,1)
+    return np.log(x)
+
+def arima_res_plot(x):
+    res = pd.DataFrame(x.resid)
+    fig, ax = plt.subplots(1,2)
+    res.plot(title="Residuals", ax=ax[0])
+    res.plot(kind='kde', title='Density', ax=ax[1])
+    fig.tight_layout()
+    print('mean: '+str(res.mean()[0])+' std: '+str(res.std()[0]))
+    
+def arima_pred_plot(x, train_data, test_data, alpha, mode='n'):
+    fc, se, conf = x.forecast(len(test_data), alpha=alpha)  # 95% conf
+    fc_series = pd.Series(fc, index=test_data.index)
+    lower_series = pd.Series(conf[:, 0], index=test_data.index)
+    upper_series = pd.Series(conf[:, 1], index=test_data.index)
+    
+    if mode=='exp':
+        plt.plot(np.exp(train_data), label='training')
+        plt.plot(np.exp(test_data), label='actual')
+        plt.plot(np.exp(fc_series), label='forecast')
+        plt.fill_between(np.exp(lower_series.index), np.exp(lower_series), np.exp(upper_series), 
+                 color='k', alpha=.15)
+        plt.legend(loc='upper left', fontsize=8)
+        return
+    # Plot
+    plt.plot(train_data, label='training')
+    plt.plot(test_data, label='actual')
+    plt.plot(fc_series, label='forecast')
+    plt.fill_between(lower_series.index, lower_series, upper_series, 
+                     color='k', alpha=.15)
+    plt.legend(loc='upper left', fontsize=8)
+############################# cases ###################################
 test=covid[covid.province=='Ontario']
-test=pd.DataFrame({'cases':itrans.real[60:]})
-test.cases=test.cases.replace(0,1)
-test.loc[test.cases.le(1)]=1
-test.cases=np.log(test.cases)
-test_stationarity(differencing(test.cases, 1), window=7, cutoff=0.01) # cases order is 1
-plot_pacf(differencing(test.cases,0)) ## looks like AR(2)
-plot_acf(differencing(test.cases,0)) ## looks like MA(1)
-cases_arima=ARIMA(test.cases, (2,1,2)).fit(disp=False) #412
+########## first try, no smooting
+simple_plot(test.cases) 
+test_stationarity(differencing(test.cases, 1), window=7, cutoff=0.01)# looks very bad, variance is wild
+train_data, test_data=train_test(test.cases, 60, 'n') # we try to predict about 2-month's data
+plot_pacf(differencing(train_data,1)) ## looks like AR(2)
+plot_acf(differencing(test_data,1)) ## looks like MA(1)
+search=pq_search(train_data, 4, 1, 1, 4, 0.05) #search for optimal pq
+search[0] # looks like pdq=112 is the one with lowest aic
+arima_model=ARIMA(train_data, (1,1,2)).fit(disp=False)
+print(arima_model.summary())
+arima_res_plot(arima_model) #mean of residual almost 0, std is not bad
+arima_pred_plot(arima_model, train_data, test_data, 0.05) # the predictions are real bad, try something else
+
+# try logging,
+log_cases=fast_log(test.cases)
+test_stationarity(differencing(log_cases, 1), window=7, cutoff=0.01) 
+# a little better but still pretty bad variance, worth a try, the end is gonna be disastrous I bet
+train_data, test_data=train_test(log_cases, 60, 'n') # we try to predict about 2-month's data
+plot_pacf(differencing(train_data,1)) ## looks like AR(2)
+plot_acf(differencing(test_data,1)) ## looks like MA(1)
+search=pq_search(train_data, 4, 1, 1, 4, 0.05) #search for optimal pq
+search[0] # looks like pdq=311 is the one with lowest aic
+arima_model=ARIMA(train_data, (3,1,1)).fit(disp=False)
+print(arima_model.summary())
+arima_res_plot(arima_model) #mean of residual almost 0, std is not bad
+arima_pred_plot(arima_model, train_data, test_data, 0.05, mode='exp') # the predictins are not bad but it's not good either
+
+
+
+#we should smooth it out a bit, especially for the end
+
+################# try averages
+ma_cases=test.cases.rolling(7).mean().dropna()
+simple_plot(ma_cases)  #much smoother, but are the variances?
+train_data, test_data=train_test(ma_cases, 60, 'n') # we try to predict about two month's data
+test_stationarity(differencing(train_data, 2), window=7, cutoff=0.01) 
+plot_pacf(differencing(train_data,2)) ## looks like AR(2)
+plot_acf(differencing(test_data,2)) ## looks like MA(1)
+search=pq_search(train_data, 5, 2, 2, 5, 0.05) #search for optimal pq
+search[0] # looks like pdq=324 is the one with lowest aic
+arima_model=ARIMA(train_data, (3,2,5)).fit(disp=False)
+print(arima_model.summary())
+arima_res_plot(arima_model) #mean of residual almost 0, std is not bad
+arima_pred_plot(arima_model, train_data, test_data, 0.05) # the predictins are indeed horrific 
+
+# trying different smoothing techniques, gotta get rid of the final variance disturbance somehow
+
+
+
+
+plot_pacf(differencing(log_cases,1)) ## looks like AR(2)
+plot_acf(differencing(log_cases,1)) ## looks like MA(1)
+cases_arima=ARIMA(log_cases, (2,1,2)).fit(disp=False) #412
 print(cases_arima.summary())
 
 res = pd.DataFrame(cases_arima.resid)
@@ -315,17 +394,14 @@ res.std() #244, not too bad
 
 cases_arima.plot_predict(dynamic=False) # nice, let's validate it with 8/2 train/test
 
-train_data, test_data=train_test(test.cases, 0.8)
-cases_arima=ARIMA(train_data, (2,1,1)).fit(disp=False)
-print(cases_arima.summary()) # BAD Pvalues. Let's do a search for optimal pq
-
-search=pq_search(train_data, 3, 1, 2, 3, 0.05) # looks like 1,1,2 or 3,2,1
+train_data, test_data=train_test(log_cases, 0.8)
+search=pq_search(train_data, 4, 1, 2, 4, 0.01) # looks like 4,1,2
 search[1]
 #let's see their performances
-cases_arima=ARIMA(train_data, (2,2,1)).fit(disp=False)
+cases_arima=ARIMA(train_data, (3,2,1)).fit(disp=False)
 print(cases_arima.summary())
 # Make as pandas series
-fc, se, conf = cases_arima.forecast(len(test_data), alpha=0.05)  # 95% conf
+fc, se, conf = cases_arima.forecast(len(test_data), alpha=0.1)  # 95% conf
 fc_series = pd.Series(fc, index=test_data.index)
 lower_series = pd.Series(conf[:, 0], index=test_data.index)
 upper_series = pd.Series(conf[:, 1], index=test_data.index)
@@ -342,11 +418,11 @@ plt.legend(loc='upper left', fontsize=8)
 plt.savefig('cases_forecast_321.png', format='png', dpi=300)
 
 res=test_data.rsub(fc)
-(res**2).mean() # 221 has the lowest ms
+(res**2).mean() # 1,1,2=4.73E5  3,2,1=4.27E5, looks like 3,2,1 is a better model
+plt.plot(np.arange(0,len(test_data)),res)
 
-cases_arima.resid
-sm.stats.acorr_ljungbox(res, lags=3)
-plot_pacf(res)
+sm.stats.acorr_ljungbox(cases_arima.resid, lags=3) # all residuals are above
+plot_pacf(cases_arima.resid) # looks like residuals are related in a very long run, but not in short term, disregarded
 
 ####### active_cases
 test_stationarity(differencing(test.active_cases, 2), window=7, cutoff=0.01) # active_cases order is 2
