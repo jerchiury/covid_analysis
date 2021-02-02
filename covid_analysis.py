@@ -17,9 +17,11 @@ from statsmodels.graphics.tsaplots import plot_pacf
 from statsmodels.tsa.arima_model import ARIMA
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.holtwinters import ExponentialSmoothing, Holt, SimpleExpSmoothing
 import scipy.fftpack as fftp
 import statsmodels.api as sm
 import dtw
+from fastdtw import fastdtw
 
 os.chdir('C:\\Users\\Jerry\\Desktop\\Jerry\\projects\\covid19')
 os.listdir()
@@ -234,8 +236,10 @@ def differencing(x,d):
         temp=temp.dropna()
         return temp
     
-def simple_plot(x):
+def simple_plot(x, grid=True):
     plt.plot(np.arange(0,len(x)),x)
+    if grid:
+        plt.grid(True)
  
 
 def test_stationarity(timeseries, window = 7, cutoff = 0.01):
@@ -279,16 +283,16 @@ def train_test(x, train_size, mode='r'):
 def pq_search(x, maxp, mindif, maxdif, maxq, pval_cut):
     final=[]
     for d in range(mindif,maxdif+1):        
-        pranges=['p'+str(n) for n in list(range(1, maxp+1))]
-        qranges=['q'+str(n) for n in list(range(1, maxq+1))]
+        pranges=['p'+str(n) for n in list(range(0, maxp+1))]
+        qranges=['q'+str(n) for n in list(range(0, maxq+1))]
         model_data=pd.DataFrame(index=pranges, columns=qranges)
-        for p in range(1, maxp+1):
-            for q in range(1, maxq+1):
+        for p in range(0, maxp+1):
+            for q in range(0, maxq+1):
                 print([p,d,q])
                 try:
                     temp_arima=ARIMA(x, (p, d, q)).fit(disp=False)
                     if (temp_arima.pvalues[1:]<=pval_cut).all():
-                        model_data.iloc[p-1,q-1]=temp_arima.aic
+                        model_data.iloc[p,q]=temp_arima.aic
                 except:
                     print('error')
         final.append(model_data)
@@ -305,8 +309,33 @@ def arima_res_plot(x):
     res.plot(kind='kde', title='Density', ax=ax[1])
     fig.tight_layout()
     print('mean: '+str(res.mean()[0])+' std: '+str(res.std()[0]))
+
     
-def arima_pred_plot(x, train_data, test_data, alpha, mode='n'):
+def arima_pred_plot(x, test_data, alpha, mode='n', conf_plot=True):
+    fc, se, conf = x.forecast(len(test_data), alpha=alpha)  # 95% conf
+    fc_series = pd.Series(fc, index=test_data.index)
+    lower_series = pd.Series(conf[:, 0], index=test_data.index)
+    upper_series = pd.Series(conf[:, 1], index=test_data.index)
+    
+    if mode=='exp':
+        plt.plot(np.exp(test_data), label='actual')
+        plt.plot(np.exp(fc_series), label='forecast')
+        if conf_plot:
+            plt.fill_between(lower_series.index, np.exp(lower_series), np.exp(upper_series), 
+                 color='k', alpha=.15)
+        plt.legend(loc='upper left', fontsize=8)
+        print('SSE: '+str(((np.exp(fc_series)-np.exp(test_data))**2).sum()))
+        return
+    # Plot
+    plt.plot(test_data, label='actual')
+    plt.plot(fc_series, label='forecast')
+    if conf_plot:
+       plt.fill_between(lower_series.index, lower_series, upper_series, 
+                     color='k', alpha=.15)
+    plt.legend(loc='upper left', fontsize=8)
+    print('SSE: '+str(((fc_series-test_data)**2).sum()))
+
+def arima_pred_plot_all(x, train_data, test_data, alpha, mode='n', conf_plot=True):
     fc, se, conf = x.forecast(len(test_data), alpha=alpha)  # 95% conf
     fc_series = pd.Series(fc, index=test_data.index)
     lower_series = pd.Series(conf[:, 0], index=test_data.index)
@@ -316,151 +345,163 @@ def arima_pred_plot(x, train_data, test_data, alpha, mode='n'):
         plt.plot(np.exp(train_data), label='training')
         plt.plot(np.exp(test_data), label='actual')
         plt.plot(np.exp(fc_series), label='forecast')
-        plt.fill_between(np.exp(lower_series.index), np.exp(lower_series), np.exp(upper_series), 
+        if conf_plot:
+            plt.fill_between(lower_series.index, np.exp(lower_series), np.exp(upper_series), 
                  color='k', alpha=.15)
         plt.legend(loc='upper left', fontsize=8)
+        print('SSE: '+str(((np.exp(fc_series)-np.exp(test_data))**2).sum()))
         return
     # Plot
     plt.plot(train_data, label='training')
     plt.plot(test_data, label='actual')
     plt.plot(fc_series, label='forecast')
-    plt.fill_between(lower_series.index, lower_series, upper_series, 
+    if conf_plot:
+       plt.fill_between(lower_series.index, lower_series, upper_series, 
                      color='k', alpha=.15)
     plt.legend(loc='upper left', fontsize=8)
+    print('SSE: '+str(((fc_series-test_data)**2).sum()))
+    
+def expsm_pred_plot(x, test_data):
+    pred=x.forecast(len(test_data))
+    plt.plot(test_data.index, test_data, label='actual')
+    plt.plot(pred.index, pred, label='forecasted')
+    plt.legend(loc='upper left', fontsize=8)
+    print('SSE: '+str(((test_data-pred)**2).sum()))
+    
+def expsm_pred_plot_all(x, train_data, test_data):
+    pred=x.forecast(len(test_data))
+    plt.plot(train_data.index, train_data, label='training')
+    plt.plot(test_data.index, test_data, label='actual')
+    plt.plot(pred.index, pred, label='forecasted')
+    plt.legend(loc='upper left', fontsize=8)
+    print('SSE: '+str(((test_data-pred)**2).sum()))
+    
 ############################# cases ###################################
 test=covid[covid.province=='Ontario']
 ########## first try, no smooting
-simple_plot(test.cases) 
-test_stationarity(differencing(test.cases, 1), window=7, cutoff=0.01)# looks very bad, variance is wild
-train_data, test_data=train_test(test.cases, 60, 'n') # we try to predict about 2-month's data
-plot_pacf(differencing(train_data,1)) ## looks like AR(2)
-plot_acf(differencing(test_data,1)) ## looks like MA(1)
-search=pq_search(train_data, 4, 1, 1, 4, 0.05) #search for optimal pq
-search[0] # looks like pdq=112 is the one with lowest aic
-arima_model=ARIMA(train_data, (1,1,2)).fit(disp=False)
-print(arima_model.summary())
-arima_res_plot(arima_model) #mean of residual almost 0, std is not bad
-arima_pred_plot(arima_model, train_data, test_data, 0.05) # the predictions are real bad, try something else
-
-# try logging,
-log_cases=fast_log(test.cases)
-test_stationarity(differencing(log_cases, 1), window=7, cutoff=0.01) 
-# a little better but still pretty bad variance, worth a try, the end is gonna be disastrous I bet
-train_data, test_data=train_test(log_cases, 60, 'n') # we try to predict about 2-month's data
-plot_pacf(differencing(train_data,1)) ## looks like AR(2)
-plot_acf(differencing(test_data,1)) ## looks like MA(1)
-search=pq_search(train_data, 4, 1, 1, 4, 0.05) #search for optimal pq
-search[0] # looks like pdq=311 is the one with lowest aic
-arima_model=ARIMA(train_data, (3,1,1)).fit(disp=False)
-print(arima_model.summary())
-arima_res_plot(arima_model) #mean of residual almost 0, std is not bad
-arima_pred_plot(arima_model, train_data, test_data, 0.05, mode='exp') # the predictins are not bad but it's not good either
-
-
-
-#we should smooth it out a bit, especially for the end
-
-################# try averages
-ma_cases=test.cases.rolling(7).mean().dropna()
-simple_plot(ma_cases)  #much smoother, but are the variances?
-train_data, test_data=train_test(ma_cases, 60, 'n') # we try to predict about two month's data
-test_stationarity(differencing(train_data, 2), window=7, cutoff=0.01) 
-plot_pacf(differencing(train_data,2)) ## looks like AR(2)
-plot_acf(differencing(test_data,2)) ## looks like MA(1)
+test.index=test.date
+data=test.cumulative_cases
+simple_plot(data) 
+test_stationarity(differencing(data, 2), window=7, cutoff=0.01)# looks very bad, variance is wild
+## trying some smoothing
+data=data.rolling(7).mean().dropna()
+test_stationarity(differencing(data, 3), window=7, cutoff=0.01)# looks very bad, variance is still wild
+## trying log
+data=test.cumulative_cases
+data=fast_log(data)
+test_stationarity(differencing(data, 2), window=7, cutoff=0.01)# looks very bad in the beginning, variance is wild
+## removing the first 70
+data=data[70:]
+test_stationarity(differencing(data, 2), window=7, cutoff=0.01)# Not too too bad, let's try
+train_data, test_data=train_test(data, 30, 'n') # we try to predict about a month's data
+plot_pacf(differencing(train_data,2)) ## looks like AR(3)
+plot_acf(differencing(test_data,2)) ## looks like MA(0)
 search=pq_search(train_data, 5, 2, 2, 5, 0.05) #search for optimal pq
-search[0] # looks like pdq=324 is the one with lowest aic
-arima_model=ARIMA(train_data, (3,2,5)).fit(disp=False)
+search[0] # looks like pdq=321 is the one with lowest aic
+arima_model=ARIMA(train_data, (3,2,1)).fit(disp=False)
 print(arima_model.summary())
+
+plt.rcParams.update({'font.size': 10})
+plt.rc('xtick', labelsize=5)
 arima_res_plot(arima_model) #mean of residual almost 0, std is not bad
-arima_pred_plot(arima_model, train_data, test_data, 0.05) # the predictins are indeed horrific 
+plt.savefig('cumulative_cases_arima_321_res.png', format='png', dpi=300)
 
-# trying different smoothing techniques, gotta get rid of the final variance disturbance somehow
+plt.rc('xtick', labelsize=5)
+arima_pred_plot(arima_model, test_data, 0.05, mode='exp') # the predictions are not looking too good, sse=4.1E10
+plt.title('Predicted vs actual Cumulative Cases \n ARIMA(3,2,1) Residual: 4.1E10')
+plt.savefig('cumulative_cases_pred_arima_321.png', format='png', dpi=300)
 
+sm.stats.acorr_ljungbox(arima_model.resid, lags=3) # all residuals are above 0.05 so no relationships between the residuals
 
+## trying other possible AIC's, like pdq=221
+arima_model=ARIMA(train_data, (2,2,1)).fit(disp=False)
+print(arima_model.summary())
+plt.rc('xtick', labelsize=5)
+arima_res_plot(arima_model) #mean of residual almost 0, std is not bad
+plt.savefig('cumulative_cases_arima_221_res.png', format='png', dpi=300)
 
+plt.rc('xtick', labelsize=5)
+arima_pred_plot(arima_model, test_data, 0.05, mode='exp') # the predictions are looking good, sse=4.3E8
+plt.title('Predicted vs actual Cumulative Cases \n ARIMA(2,2,1) Residual: 4.3E8')
+plt.savefig('cumulative_cases_pred_arima_221.png', format='png', dpi=300)
 
-plot_pacf(differencing(log_cases,1)) ## looks like AR(2)
-plot_acf(differencing(log_cases,1)) ## looks like MA(1)
-cases_arima=ARIMA(log_cases, (2,1,2)).fit(disp=False) #412
-print(cases_arima.summary())
+arima_pred_plot_all(arima_model, train_data, test_data, 0.05, mode='exp')
+plt.title('Cumulative Cases prediction Covid-19 \n ARIMA(2,2,1)')
+plt.savefig('cumulative_cases_pred_all_arima_221.png', format='png', dpi=300)
 
-res = pd.DataFrame(cases_arima.resid)
-fig, ax = plt.subplots(1,2)
-res.plot(title="Residuals", ax=ax[0])
-res.plot(kind='kde', title='Density', ax=ax[1])
-fig.tight_layout()
-res.mean() #-0.118, good
-res.std() #244, not too bad
+sm.stats.acorr_ljungbox(arima_model.resid, lags=3) # all residuals are above 0.05 so no relationships between the residuals
+## so in summary, Arima model with pdq=0,2,5 is pretty good with SSE of 3.4E8
 
-cases_arima.plot_predict(dynamic=False) # nice, let's validate it with 8/2 train/test
+########## exponential smoothing
+# now we know the residual to beat is 4.3E8, let's see another type of model
+test=covid[covid.province=='Ontario']
+test.index=test.date
+data=test.cumulative_cases
+train_data, test_data=train_test(data, 30, 'n')
 
-train_data, test_data=train_test(log_cases, 0.8)
-search=pq_search(train_data, 4, 1, 2, 4, 0.01) # looks like 4,1,2
-search[1]
-#let's see their performances
-cases_arima=ARIMA(train_data, (3,2,1)).fit(disp=False)
-print(cases_arima.summary())
-# Make as pandas series
-fc, se, conf = cases_arima.forecast(len(test_data), alpha=0.1)  # 95% conf
-fc_series = pd.Series(fc, index=test_data.index)
-lower_series = pd.Series(conf[:, 0], index=test_data.index)
-upper_series = pd.Series(conf[:, 1], index=test_data.index)
+# exponential smoothing damped
+exp_model = ExponentialSmoothing(train_data, trend='mul', seasonal=None, damped=True).fit()
+arima_res_plot(exp_model)
 
-# Plot
-plt.plot(train_data, label='training')
-plt.plot(test_data, label='actual')
-plt.plot(fc_series, label='forecast')
-plt.fill_between(lower_series.index, lower_series, upper_series, 
-                 color='k', alpha=.15)
-plt.title('ARIMA Forecast vs Actuals (3,2,1)')
-plt.legend(loc='upper left', fontsize=8)
+expsm_pred_plot(exp_model, test_data) #sse=5.4E8
+plt.title('Predicted vs actual Cumulative Cases \n damped exponential smoothing, Residual: 5.4E8')
+plt.savefig('cumulative_cases_pred_expsm_damped.png', format='png', dpi=300)
+expsm_pred_plot_all(exp_model, train_data, test_data)
 
-plt.savefig('cases_forecast_321.png', format='png', dpi=300)
+#holt
+holt_model=Holt(train_data, exponential=True).fit(optimized=True)
+arima_res_plot(holt_model)
+expsm_pred_plot(holt_model, test_data) #sse=1.5E9
 
-res=test_data.rsub(fc)
-(res**2).mean() # 1,1,2=4.73E5  3,2,1=4.27E5, looks like 3,2,1 is a better model
-plt.plot(np.arange(0,len(test_data)),res)
+### dynamic time warping brute forcing
+test=covid[covid.province=='Ontario']
+def dtw_pred(data, train_len, pred_len):
+    data=data.values
+    total_len=train_len+pred_len #total length of the train/pred series
+    train_final=data[len(data)-total_len:len(data)-pred_len] # where the real training data is
+    scale=train_final[-1]
+    train_final=train_final/scale
+    pred_final=np.array([0]*pred_len)
+    denom=0
+    for i in range(0, len(data)-pred_len-total_len+1):
+        # normalized train
+        train=data[i:i+train_len]
+        last=train[-1]
+        train=train/last
+        #normalized pred
+        pred=data[i+train_len:i+total_len]
+        pred=pred/last
+        #similarity
+        sim=1/(1+fastdtw(train, train_final)[0])
+        result=pred*sim
+        #add result
+        pred_final=pred_final+result
+        denom=denom+sim
+    result=pred_final/denom*scale
+    return(result)
+        
+#finding the optimal number of training days for each prediction length, 
 
-sm.stats.acorr_ljungbox(cases_arima.resid, lags=3) # all residuals are above
-plot_pacf(cases_arima.resid) # looks like residuals are related in a very long run, but not in short term, disregarded
+best=[]
+for n in range(30, 110, 10):
+    print(n)
+    num=[]
+    residuals=[]
+    for i in range(50,60):
+        a=dtw_pred(test.cumulative_cases, i, n)
+        res=test.cumulative_cases[-n:]-a
+        res=(res**2).sum()
+        num.append(i)
+        residuals.append(res)
+    b=num[residuals.index(min(residuals))]
+    best.append(b)
+    
+# [54, 55, 54, 53, 52, 51, 51, 52], looks bretty stable in the 52's, mean is 53
+# we therefore use training length of 53 to train our model
+dtw_forecast=dtw_pred(test.cumulative_cases, 53, 30)
 
-####### active_cases
-test_stationarity(differencing(test.active_cases, 2), window=7, cutoff=0.01) # active_cases order is 2
-plot_pacf(differencing(test.active_cases,2)) ## looks like AR(5)
-plot_acf(differencing(test.active_cases,2)) ## looks like MA(2)
-active_cases_arima=ARIMA(test.active_cases, (5,2,2)).fit(disp=False)
-print(active_cases_arima.summary()) # looks like MA(1) is not too good
-active_cases_arima=ARIMA(test.active_cases, (5,2,1)).fit(disp=False)
-print(active_cases_arima.summary()) # looks like MA(1) is better with lower AIC
-
-res = pd.DataFrame(active_cases_arima.resid)
-fig, ax = plt.subplots(1,2)
-res.plot(title="Residuals", ax=ax[0])
-res.plot(kind='kde', title='Density', ax=ax[1])
-fig.tight_layout()
-res.mean() #-0.02, good
-res.std() #300, not too bad
-active_cases_arima.plot_predict(dynamic=False)
-
-train_data, test_data=train_test(test.active_cases, 0.8)
-search=pq_search(train_data, 5, 2, 3, 5, 0.05) # looks like either 4,2,1 is the ways to go
-search[1]
-#let's see their performances
-active_cases_arima=ARIMA(train_data, (4,2,1)).fit(disp=False)
-
-# Make as pandas series
-fc, se, conf = active_cases_arima.forecast(len(test_data), alpha=0.05)  # 95% conf
-fc_series = pd.Series(fc, index=test_data.index)
-lower_series = pd.Series(conf[:, 0], index=test_data.index)
-upper_series = pd.Series(conf[:, 1], index=test_data.index)
-
-# Plot
-plt.plot(train_data, label='training')
-plt.plot(test_data, label='actual')
-plt.plot(fc_series, label='forecast')
-plt.fill_between(lower_series.index, lower_series, upper_series, 
-                 color='k', alpha=.15)
-plt.title('ARIMA Forecast vs Actuals (4,2,1)')
-plt.legend(loc='upper left', fontsize=8)
-
-plt.savefig('active_cases_forecast_421.png', format='png', dpi=300)
+simple_plot(test.cumulative_cases[-30:])
+simple_plot(dtw_forecast)
+res=test.cumulative_cases[-30:]-dtw_forecast
+res=sum(res**2) # residual of 1.26E9, not bad! but not the best obviously
+simple_plot(test.cumulative_cases)
