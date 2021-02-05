@@ -22,6 +22,11 @@ import scipy.fftpack as fftp
 import statsmodels.api as sm
 import dtw
 from fastdtw import fastdtw
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.layers import LSTM
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
 
 os.chdir('C:\\Users\\Jerry\\Desktop\\Jerry\\projects\\covid19')
 os.listdir()
@@ -473,10 +478,10 @@ def dtw_pred(data, train_len, pred_len):
         pred=pred/last
         #similarity
         sim=1/(1+fastdtw(train, train_final)[0])
-        result=pred*sim
+        result=pred*sim**2
         #add result
         pred_final=pred_final+result
-        denom=denom+sim
+        denom=denom+sim**2
     result=pred_final/denom*scale
     return(result)
         
@@ -487,7 +492,7 @@ for n in range(30, 110, 10):
     print(n)
     num=[]
     residuals=[]
-    for i in range(50,60):
+    for i in range(20,40):
         a=dtw_pred(test.cumulative_cases, i, n)
         res=test.cumulative_cases[-n:]-a
         res=(res**2).sum()
@@ -495,13 +500,58 @@ for n in range(30, 110, 10):
         residuals.append(res)
     b=num[residuals.index(min(residuals))]
     best.append(b)
-    
-# [54, 55, 54, 53, 52, 51, 51, 52], looks bretty stable in the 52's, mean is 53
+np.array(best).mean() ## 38 is the mean
+# looks like all are 50
 # we therefore use training length of 53 to train our model
-dtw_forecast=dtw_pred(test.cumulative_cases, 53, 30)
+dtw_forecast=dtw_pred(test.cumulative_cases, 38, 30)
 
 simple_plot(test.cumulative_cases[-30:])
 simple_plot(dtw_forecast)
 res=test.cumulative_cases[-30:]-dtw_forecast
 res=sum(res**2) # residual of 1.26E9, not bad! but not the best obviously
 simple_plot(test.cumulative_cases)
+
+##################### final model summary
+#arima
+ON_cases=covid[covid.province=='Ontario'].cumulative_cases
+arima_train=fast_log(ON_cases)[70:]
+pq_search(arima_train, 3, 2, 2, 3, 0.05) # min AIC is at 321
+arima_model=ARIMA(arima_train, (0,2,3)).fit(disp=False)
+arima_forecast, se, conf = arima_model.forecast(30, alpha=0.05) # 30 days forecast
+arima_forecast=np.exp(arima_forecast)
+arima_forecast=pd.Series(arima_forecast)
+lower_forecast = np.exp(pd.Series(conf[:, 0]))
+upper_forecast = np.exp(pd.Series(conf[:, 1]))
+# exponential smoothing
+expsm_model = ExponentialSmoothing(ON_cases, trend='mul', seasonal=None, damped=True).fit()
+expsm_forecast=expsm_model.forecast(30)
+
+# dtw
+dtw_train=ON_cases.append(pd.Series([0]*30))
+dtw_forecast=dtw_pred(dtw_train, 38, 30)
+dtw_forecast=pd.Series(dtw_forecast)
+
+# plots
+past=ON_cases[-60:]
+past.index=np.arange(1,61)
+arima_forecast.index=np.arange(61,91)
+upper_forecast.index=np.arange(61,91)
+lower_forecast.index=np.arange(61,91)
+expsm_forecast.index=np.arange(61,91)
+dtw_forecast.index=np.arange(61,91)
+
+plt.plot(past, label='Current cases', linewidth=3)
+plt.plot(arima_forecast, label='ARIMA(0,2,3)')
+plt.plot(upper_forecast, label='ARIMA 95% confidence upper')
+plt.plot(lower_forecast, label='ARIMA 95% confidence lower', linestyle='--', linewidth=0.8)
+plt.fill_between(np.arange(61,91), arima_forecast, upper_forecast, color='k', alpha=.15)
+plt.plot(expsm_forecast, label='Exponential Smoothing')
+plt.plot(dtw_forecast, label='Dynamic Time Warping')
+plt.legend(loc='upper left', fontsize=8)
+plt.title('Cumulative cases forecasts with 3 different models')
+plt.ylabel('cases')
+plt.xlabel('days')
+plt.tight_layout()
+plt.savefig('cumulative_cases_forecasts_all.png', format='png', dpi=300)
+
+## of course, the cumulative cases cannot go down and lower ARIMA is decreasing, thus the dotted line, not realistic. 
